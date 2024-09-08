@@ -1,0 +1,25 @@
+[package]
+name = "gitlab-meta-runner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.87"
+async-process = "2.2.4"
+async-std = "1.13.0"
+clap = { version = "4.5.17", features = ["derive", "string"] }
+clap-verbosity-flag = "2.2.1"
+colored = "2.1.0"
+dirs = "5.0.1"
+futures = "0.3.30"
+gitlab = "0.1705.0"
+http = "1.1.0"
+itertools = "0.13.0"
+log = "0.4.22"
+serde = "1.0.210"
+serde_derive = "1.0.210"
+serde_json = "1.0.128"
+shellexpand = "3.1.0"
+simple_logger = { version = "5.0.0", features = ["stderr"] }
+tokio = { version = "1.40.0", features = ["full"] }
+toml = "0.8.19"
