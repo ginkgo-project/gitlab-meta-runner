@@ -37,7 +37,7 @@ fn get_env() -> anyhow::Result<JobEnv> {
 }
 
 fn config_step(context: &JobContext) -> anyhow::Result<()> {
-    info!(
+    debug!(
         "Executing config step for job {} with runner {}",
         context.env.job_id, context.runner_name
     );
@@ -97,7 +97,7 @@ fn build_image_pull_url(image_name: &str) -> String {
 }
 
 async fn prepare_step(context: &JobContext) -> anyhow::Result<()> {
-    info!(
+    debug!(
         "Executing prepare step for job {} with runner {}",
         context.env.job_id, context.runner_name
     );
@@ -211,7 +211,7 @@ async fn run_step(
     script_path: &PathBuf,
     step_name: &str,
 ) -> anyhow::Result<()> {
-    info!(
+    debug!(
         "Executing run step {} for job {} with runner {}",
         step_name, context.env.job_id, context.runner_name
     );
@@ -229,6 +229,8 @@ async fn run_step(
     run_command
         .current_dir(&env.builds_dir)
         .arg("exec")
+        .arg("--no-home")
+        .arg("--writable-tmpfs")
         .args(bind_flags)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -241,7 +243,12 @@ async fn run_step(
         run_command.arg("--nv");
     }
     // add positional arguments
-    run_command.arg(image_path).arg(script_path).arg(step_name);
+    run_command
+        .arg(image_path)
+        .arg("bash")
+        .arg("-l")
+        .arg(script_path)
+        .arg(step_name);
     debug!("Executing step with command {:?}", run_command);
     // execute process
     let mut run_process = run_command.spawn()?;
@@ -254,7 +261,7 @@ async fn run_step(
 }
 
 fn cleanup_step(context: &JobContext) -> anyhow::Result<()> {
-    info!(
+    debug!(
         "Executing cleanup step for job {} with runner {}",
         context.env.job_id, context.runner_name
     );

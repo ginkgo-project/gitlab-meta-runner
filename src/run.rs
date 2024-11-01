@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use async_process::{Command, Stdio};
 use futures::{future::join_all, select, AsyncReadExt, AsyncWriteExt, FutureExt};
 use gitlab::AsyncGitlab;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use tokio::{
     signal,
     time::{self, MissedTickBehavior},
@@ -65,7 +65,7 @@ fn find_match<'a>(
         })
         .min_by_key(|i| i.1.tags.len())
         .or_else(|| {
-            warn!("Could not find a suitable runner for pending job {:?}", job);
+            info!("Could not find a suitable runner for pending job {:?}", job);
             None
         })
 }
