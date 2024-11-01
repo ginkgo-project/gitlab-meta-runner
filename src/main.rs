@@ -33,6 +33,6 @@ fn main() -> anyhow::Result<()> {
         cli::Command::Configure => configure::configure(&cli.paths),
         cli::Command::Executor(options) => executor::exec(&cli.paths, &options),
         cli::Command::RunSingle => run::run_single(&cli.paths),
-        cli::Command::Run => run::run(&cli.paths),
+        cli::Command::Run => run::run(cli.paths),
     }
 }

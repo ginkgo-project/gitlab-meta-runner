@@ -7,12 +7,16 @@ use std::{
     time::Duration,
     u32,
 };
+use tokio_util::sync::CancellationToken;
 
 use async_process::{Command, Stdio};
-use futures::{future::join_all, AsyncReadExt, AsyncWriteExt};
+use futures::{future::join_all, select, AsyncReadExt, AsyncWriteExt, FutureExt};
 use gitlab::AsyncGitlab;
 use log::{debug, error, info, warn};
-use tokio::time::{self, MissedTickBehavior};
+use tokio::{
+    signal,
+    time::{self, MissedTickBehavior},
+};
 
 use crate::{
     check_config, cli,
@@ -236,28 +240,53 @@ async fn run_impl(paths: &cli::Paths, state: &MetaRunnerState) -> anyhow::Result
     Ok(successful)
 }
 
-#[tokio::main(flavor = "multi_thread")]
-pub async fn run(paths: &cli::Paths) -> anyhow::Result<()> {
-    check_config::check(paths)?;
-    let mut state = initialize(paths).await?;
-    let poll_duration = Duration::from_secs(state.config.poll.interval as u64);
-    let mut timer = time::interval(poll_duration);
-    timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    loop {
-        timer.tick().await;
-        info!("Polling for jobs...");
-        let result = future::timeout(poll_duration, run_impl(paths, &state)).await;
-        match result {
-            Ok(Ok(new_successful_jobs)) => state
-                .successful_job_ids
-                .extend(new_successful_jobs.into_iter()),
-            Ok(Err(e)) => error!("Failed poll: {:?}", e),
-            Err(_) => error!("Poll timed out"),
-        };
+#[tokio::main(flavor = "multi_thread", worker_threads = 8)]
+pub async fn run(paths: cli::Paths) -> anyhow::Result<()> {
+    check_config::check(&paths)?;
+    let mut state = initialize(&paths).await?;
+    let cancel_token = CancellationToken::new();
+    let job_cancel_token = cancel_token.clone();
+
+    let task = tokio::spawn(async move {
+        let poll_duration = Duration::from_secs(state.config.poll.interval as u64);
+        let mut timer = time::interval(poll_duration);
+        timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            // Handle cancellation
+            select! {
+                _ = timer.tick().fuse() => (),
+                _ =  job_cancel_token.cancelled().fuse() => {
+                    info!("Poll task shutting down");
+                    break
+                }
+            };
+            // Actual poll loop
+            info!("Polling for jobs...");
+            let result = future::timeout(poll_duration, run_impl(&paths, &state)).await;
+            match result {
+                Ok(Ok(new_successful_jobs)) => state
+                    .successful_job_ids
+                    .extend(new_successful_jobs.into_iter()),
+                Ok(Err(e)) => error!("Failed poll: {:?}", e),
+                Err(_) => error!("Poll timed out"),
+            };
+        }
+    });
+
+    match signal::ctrl_c().await {
+        Ok(()) => info!("Received shutdown signal (Ctrl+C), cancelling poll task"),
+        Err(_) => error!("Failed to listen for shutdown signal, shutting down anyways."),
     }
+
+    // the result of the shutdown signal send doesn't matter, since if it fails, the task already hung up
+    cancel_token.cancel();
+    task.await
+        .context("Failed waiting for poll task to finish")?;
+
+    Ok(())
 }
 
-#[tokio::main(flavor = "multi_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 8)]
 pub async fn run_single(paths: &cli::Paths) -> anyhow::Result<()> {
     check_config::check(paths)?;
     let state = initialize(paths).await?;

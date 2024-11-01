@@ -1,4 +1,3 @@
-use anyhow::Context;
 use log::warn;
 use std::{
     collections::HashMap,
@@ -37,10 +36,6 @@ pub fn get_generated_config_file_path(paths: &cli::Paths, meta_runner_name: &Str
                 .join(format!("{}.gitlab-config.toml", meta_runner_name)),
         )
         .to_owned()
-}
-
-pub fn get_last_job_id_file_path(data_dir: &PathBuf, meta_runner_name: &String) -> PathBuf {
-    data_dir.join(format!("{}.last_job_id", meta_runner_name))
 }
 
 pub fn get_token_placeholder() -> String {
@@ -308,30 +303,6 @@ pub fn write_tokens(
         )
         .as_bytes(),
     )?;
-    Ok(())
-}
-
-pub fn read_last_job_id(filename: &Path) -> anyhow::Result<Option<u64>> {
-    match std::fs::read_to_string(filename) {
-        Ok(str) => Ok(Some(u64::from_str_radix(&str, 10).context(format!(
-            "Failed parsing last_job_id file {:?} with content '{}'",
-            filename, str
-        ))?)),
-        Err(e) => match e.kind() {
-            std::io::ErrorKind::NotFound => Ok(None),
-            _ => Err(e).context(format!("Failed reading last_job_id_file {:?}", filename)),
-        },
-    }
-}
-
-pub fn write_last_job_id(filename: &Path, job_id: u64) -> anyhow::Result<()> {
-    let mut file = std::fs::File::create(filename)
-        .context(format!("Failed creating last_job_id file {:?}", filename))?;
-    file.write_all(format!("{}", job_id).as_bytes())
-        .context(format!(
-            "Failed writing {} to last_job_id file {:?}",
-            job_id, filename
-        ))?;
     Ok(())
 }
 
