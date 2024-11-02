@@ -151,9 +151,14 @@ pub fn expand_executor_config_template(
             .iter()
             .map(|v| string_expand(v))
             .collect::<anyhow::Result<Vec<_>>>()?,
-        builds_dir: string_expand(&config.runner.builds_dir)
-            .context("builds_dir")?
-            .into(),
+        builds_dir: string_expand(
+            executor
+                .builds_dir
+                .as_ref()
+                .unwrap_or(&config.runner.builds_dir),
+        )
+        .context("builds_dir")?
+        .into(),
         cache_dir: string_expand(&config.runner.cache_dir)
             .context("cache_dir")?
             .into(),

@@ -125,6 +125,8 @@ pub enum GitLabExecutorPullPolicy {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GitLabCustomExecutorConfigTemplate {
+    /// Override builds_dir provided by gitlab-runner config, will be variable-expanded
+    pub builds_dir: Option<String>,
     /// Path to store the image files in, will be variable-expanded
     pub image_dir: String,
     /// Path to use for caching image layers, will be variable-expanded
@@ -245,6 +247,7 @@ pub fn get_default_config() -> GitLabRunnersConfig {
         .into_iter()
         .collect(),
         executor: Some(GitLabCustomExecutorConfigTemplate {
+            builds_dir: None,
             image_dir: "$HOME/images".into(),
             image_cache_dir: None,
             image_tmp_dir: None,
