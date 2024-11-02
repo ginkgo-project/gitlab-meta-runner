@@ -235,6 +235,7 @@ async fn run_step(
         .arg("exec")
         .arg("--no-home")
         .arg("--writable-tmpfs")
+        .arg("--cleanenv")
         .args(bind_flags)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
