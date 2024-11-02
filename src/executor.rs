@@ -220,10 +220,14 @@ async fn run_step(
     let image = &env.image;
     let image_path = config.image_dir.join(build_image_filename(image));
     // mount script, builds and cache dir
-    let binds = [script_path, &env.builds_dir, &config.cache_dir];
+    let binds: Vec<_> = [script_path, &env.builds_dir, &config.cache_dir]
+        .iter()
+        .map(|v| v.as_os_str().to_owned())
+        .chain(config.mount.iter().map(|v| v.clone().into()))
+        .collect();
     let bind_flags = binds
         .iter()
-        .map(|mount| [OsStr::new("--bind"), mount.as_os_str()])
+        .map(|mount| [OsStr::new("--bind"), &mount])
         .flatten();
     let mut run_command = async_process::Command::new(&config.apptainer_executable);
     run_command
