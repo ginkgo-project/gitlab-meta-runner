@@ -51,6 +51,7 @@ pub fn configure(paths: &Paths) -> anyhow::Result<()> {
         "Failed reading config file {:?}",
         paths.config_file
     ))?;
+    std::fs::create_dir_all(&paths.data_dir).context("Creating data dir failed")?;
     let token_file_path = get_tokens_file_path(&paths.data_dir, &config.name);
     let runner_config_file_path = get_generated_config_file_path(&paths, &config.name);
     let tokens = update_registrations(&config, &token_file_path).context(format!(
