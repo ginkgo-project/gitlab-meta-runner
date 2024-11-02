@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::cli::Paths;
 use crate::config::get_generated_config_file_path;
 use crate::config::BoolOrString;
@@ -27,6 +29,7 @@ fn string_expand_impl<'a, F: Fn(&str) -> Option<&'a str>>(
         .to_str()
         .ok_or(anyhow!("Home directory path can't be converted to string"))?
         .to_owned();
+    let env_vars: HashMap<_, String> = std::env::vars().collect();
     shellexpand::full_with_context(
         string,
         || Some(&home_dir),
@@ -36,16 +39,17 @@ fn string_expand_impl<'a, F: Fn(&str) -> Option<&'a str>>(
                 "NAME" => Ok(Some(instance_name)),
                 // special case: THIS expands to the binary path of this application
                 "THIS" => Ok(Some(current_exe_str)),
-                // special case: HOME expands to the home directory
-                "HOME" => Ok(Some(&home_dir)),
                 v => {
                     if let Some(s) = additional_vars(v) {
                         return Ok(Some(s));
                     }
                     let variable = instance.config_variables.get(v);
-                    match variable {
-                        Some(v) => Ok(Some(v)),
-                        None => Err(anyhow!("Undefined variable")),
+                    let env_variable = env_vars.get(v);
+                    match (variable, env_variable) {
+                        // Local variables take precedence over environment variables
+                        (Some(v), _) => Ok(Some(v)),
+                        (None, Some(v)) => Ok(Some(v)),
+                        _ => Err(anyhow!("Undefined variable")),
                     }
                 }
             }
