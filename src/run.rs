@@ -178,6 +178,10 @@ async fn run_impl(paths: &cli::Paths, state: &MetaRunnerState) -> anyhow::Result
         }
         grouped_matched_jobs.get_mut(name).unwrap().1.push(job);
     }
+    // sort descending by priority
+    let mut grouped_matched_jobs: Vec<_> = grouped_matched_jobs.into_iter().collect();
+    grouped_matched_jobs.sort_by_key(|(_, (instance, _))| instance.launch_priority);
+    grouped_matched_jobs.reverse();
     // Dispatch jobs
     let mut queue = Vec::new();
     // this unwrap can't fail because we ran check_config::check

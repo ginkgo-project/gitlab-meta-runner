@@ -26,8 +26,8 @@ fn main() -> anyhow::Result<()> {
         .init()
         .unwrap();
     match cli.command {
-        cli::Command::CreateExampleConfig => config::write_default_config(&cli.paths.config_file),
-        cli::Command::ShowExampleConfig => Ok(println!("{}", config::get_default_config_str())),
+        cli::Command::CreateExampleConfig => config::write_example_config(&cli.paths.config_file),
+        cli::Command::ShowExampleConfig => Ok(config::print_example_config_highlighted()),
         cli::Command::CheckConfig => check_config::check(&cli.paths),
         cli::Command::ShowConfig => check_config::show(&cli.paths),
         cli::Command::Configure => configure::configure(&cli.paths),

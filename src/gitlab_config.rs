@@ -1,6 +1,8 @@
+use documented::DocumentedFields;
 use serde_derive::{Deserialize, Serialize};
+use struct_field_names_as_array::FieldNamesAsArray;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, DocumentedFields, FieldNamesAsArray, Deserialize, Serialize)]
 pub struct Runner {
     /// Directory to use for builds, will be variable-expanded
     pub builds_dir: String,
@@ -13,7 +15,7 @@ pub struct Runner {
     pub environment: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, DocumentedFields, FieldNamesAsArray, Deserialize, Serialize)]
 pub struct CustomExecutor {
     /// The executable to configure a job, will be template-expanded
     pub config_exec: String,

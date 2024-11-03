@@ -1,3 +1,11 @@
+use anyhow::Context;
+use documented::DocumentedFields;
+use inkjet::{
+    formatter::Terminal,
+    theme::{vendored, Theme},
+    Highlighter, Language,
+};
+use itertools::Itertools;
 use log::warn;
 use std::{
     collections::HashMap,
@@ -5,6 +13,9 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
 };
+use struct_field_names_as_array::FieldNamesAsArray;
+use termcolor::{ColorChoice, StandardStream};
+use toml_edit::{DocumentMut, RawString};
 
 use serde::{de::Error, Deserializer, Serializer};
 use serde_derive::{Deserialize, Serialize};
@@ -84,16 +95,20 @@ impl<'de> serde::Deserialize<'de> for BoolOrString {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, DocumentedFields, FieldNamesAsArray, Deserialize, Serialize)]
 pub struct GitLabRunnerInstance {
     /// Tags whose associated jobs will be run by this runner
     pub tags: Vec<String>,
-    /// Variables to be expanded in the template instantiation
-    /// Naming to avoid confusing with environment variables
+    /// Priority in which the instances' launch processes should be executed, higher priority means earlier launch.
+    /// All jobs without a priority will be launched last.
+    pub launch_priority: Option<u32>,
+    /// Variables to be expanded in the template instantiation.
+    /// Each value needs to be a string!
+    // Naming to avoid confusing with environment variables
     pub config_variables: HashMap<String, String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, DocumentedFields, FieldNamesAsArray, Deserialize, Serialize)]
 pub struct GitLabLaunchConfig {
     /// Executable name or path, will NOT be variable-expanded
     pub executable: String,
@@ -123,7 +138,7 @@ pub enum GitLabExecutorPullPolicy {
     Never,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, DocumentedFields, FieldNamesAsArray, Deserialize, Serialize)]
 pub struct GitLabCustomExecutorConfigTemplate {
     /// Override builds_dir provided by gitlab-runner config, will be variable-expanded
     pub builds_dir: Option<String>,
@@ -163,13 +178,13 @@ pub struct GitLabCustomExecutorConfig {
     pub cache_dir: PathBuf,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, DocumentedFields, FieldNamesAsArray, Deserialize, Serialize)]
 pub struct GitLabPollConfig {
     /// Interval (in seconds) for polling for new jobs
     pub interval: u32,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, DocumentedFields, FieldNamesAsArray, Deserialize, Serialize)]
 pub struct GitLabRunnersConfig {
     /// Unique name for the meta-runner
     pub name: String,
@@ -186,13 +201,30 @@ pub struct GitLabRunnersConfig {
     pub poll: GitLabPollConfig,
     /// Configuration for launching ephemeral runners
     /// Some of the configuration variables allow variable expansion from the runner instance variables
+    /// Available variables are (in order of precedence)
+    /// - $NAME for the runner instance name, to be passed to `gitlab-runner run-single --runner-name $NAME``
+    /// - $THIS for the path to this executable
+    /// - $CONFIG for the path to the generated gitlab-runner config file, to be passed to `gitlab-runner --config $CONFIG`
+    /// - $NUM_JOBS for the number of jobs that were grouped together for this launch, to be passed to `gitlab-runner run-single --max-builds 1`
+    /// - Any variables defined in runners.<runner_name>.config_variables
+    /// - Any environment variables provided by gitlab-runner to this custom executor
     pub launch: Option<GitLabLaunchConfig>,
     /// Configuration for the custom executor
     /// Some of the configuration variables allow variable expansion from the runner instance variables
+    /// Available variables are (in order of precedence)
+    /// - $NAME for the runner instance name
+    /// - $THIS for the path to this executable
+    /// - Any variables defined in runners.<runner_name>.config_variables
+    /// - Any environment variables provided by gitlab-runner to this custom executor
     pub executor: Option<GitLabCustomExecutorConfigTemplate>,
     /// Configuration template for gitlab-runner config file
     /// It will be instantiated for every runner in the runners array,
     /// expanding occurrences of the runner instance variables into their values
+    /// Available variables are (in order of precedence)
+    /// - $NAME for the runner instance name
+    /// - $THIS for the path to this executable
+    /// - Any variables defined in runners.<runner_name>.config_variables
+    /// - Any environment variables available when calling `gitlab-meta-runner (configure|show-config)`
     pub runner: gitlab_config::Runner,
 }
 
@@ -200,7 +232,7 @@ fn strs_to_strings(strs: &[&str]) -> Vec<String> {
     strs.iter().map(|&s| s.into()).collect()
 }
 
-pub fn get_default_config() -> GitLabRunnersConfig {
+pub fn get_example_config() -> GitLabRunnersConfig {
     GitLabRunnersConfig {
         name: "meta-runner".into(),
         project: "gitlab-org/gitlab".into(),
@@ -221,16 +253,16 @@ pub fn get_default_config() -> GitLabRunnersConfig {
                     cleanup_args: strs_to_strings(&["executor", "$NAME", "cleanup"]),
                 },
             },
-            environment: None,
+            environment: Some(vec!["ENV_VARIABLE=value".into()]),
         },
         launch: Some(GitLabLaunchConfig {
             executable: "sbatch".into(),
             args: [].into_iter().map(str::to_string).collect(),
-            timeout: None,
+            timeout: Some(300),
             stdin: Some(
                 "#!/bin/bash\ngitlab-runner run-single --config $CONFIG --runner $NAME --max-builds $NUM_JOBS --wait-timeout 1\n".into(),
             ),
-            workdir: None,
+            workdir: Some("$HOME/launch".into()),
             group_size: 1,
         }),
         poll: GitLabPollConfig { interval: 30 },
@@ -238,6 +270,7 @@ pub fn get_default_config() -> GitLabRunnersConfig {
             "test-runner".to_owned(),
             GitLabRunnerInstance {
                 tags: vec!["tag-1".to_owned(), "tag-2".to_owned()],
+                launch_priority: Some(10),
                 config_variables: [("VARIABLE", "value")]
                     .map(|(k, v)| (k.to_owned(), v.to_owned()))
                     .into_iter()
@@ -247,10 +280,10 @@ pub fn get_default_config() -> GitLabRunnersConfig {
         .into_iter()
         .collect(),
         executor: Some(GitLabCustomExecutorConfigTemplate {
-            builds_dir: None,
+            builds_dir: Some("$HOME/builds".into()),
             image_dir: "$HOME/images".into(),
-            image_cache_dir: None,
-            image_tmp_dir: None,
+            image_cache_dir: Some("$HOME/image_cache".into()),
+            image_tmp_dir: Some("$HOME/image_tmp".into()),
             pull_policy: GitLabExecutorPullPolicy::IfNotPresent,
             apptainer_executable: "apptainer".into(),
             gpu_amd: BoolOrString::Bool(false),
@@ -269,13 +302,85 @@ pub fn read_config(filename: &Path) -> anyhow::Result<GitLabRunnersConfig> {
     Ok(parsed)
 }
 
-pub fn get_default_config_str() -> String {
-    toml::to_string_pretty(&get_default_config()).unwrap()
+fn annotate_toml_table<T: DocumentedFields>(table: &mut toml_edit::Table) {
+    for (mut key, value) in table.iter_mut() {
+        let key_name = key.get().to_owned();
+        let comments = T::get_field_docs(key_name).map_or("".into(), |comment| {
+            format!("# {}\n", comment.lines().join("\n# "))
+        });
+        match value {
+            toml_edit::Item::None => (),
+            toml_edit::Item::Value(_) => {
+                key.leaf_decor_mut().set_prefix(comments);
+            }
+            toml_edit::Item::Table(table) => {
+                let original_decor = table
+                    .decor()
+                    .prefix()
+                    .map_or(RawString::default(), |v| v.to_owned());
+                table.decor_mut().set_prefix(format!(
+                    "{}{}",
+                    original_decor.as_str().unwrap_or(""),
+                    comments
+                ));
+            }
+            // doesn't appear in our configuration
+            toml_edit::Item::ArrayOfTables(_) => todo!(),
+        };
+    }
 }
 
-pub fn write_default_config(filename: &Path) -> anyhow::Result<()> {
-    let mut file = std::fs::File::create_new(filename)?;
-    file.write_all(get_default_config_str().as_bytes())?;
+pub fn get_example_config_str() -> String {
+    let config = get_example_config();
+    let mut document = toml::to_string_pretty(&config)
+        .unwrap()
+        .parse::<DocumentMut>()
+        .unwrap();
+    annotate_toml_table::<GitLabRunnersConfig>(document.as_table_mut());
+    {
+        let runners = document.get_mut("runners").unwrap();
+        for (name, _) in &config.runners {
+            annotate_toml_table::<GitLabRunnerInstance>(
+                runners.get_mut(name).unwrap().as_table_mut().unwrap(),
+            );
+        }
+    }
+    annotate_toml_table::<GitLabPollConfig>(
+        document.get_mut("poll").unwrap().as_table_mut().unwrap(),
+    );
+    annotate_toml_table::<GitLabLaunchConfig>(
+        document.get_mut("launch").unwrap().as_table_mut().unwrap(),
+    );
+    annotate_toml_table::<GitLabCustomExecutorConfigTemplate>(
+        document
+            .get_mut("executor")
+            .unwrap()
+            .as_table_mut()
+            .unwrap(),
+    );
+    annotate_toml_table::<gitlab_config::Runner>(
+        document.get_mut("runner").unwrap().as_table_mut().unwrap(),
+    );
+    document.to_string()
+}
+
+pub fn print_example_config_highlighted() {
+    let config = get_example_config_str();
+    let mut highlighter = Highlighter::new();
+    let language = Language::Toml;
+    let theme: Theme = Theme::from_helix(vendored::BASE16_TERMINAL).unwrap();
+    let stream = StandardStream::stdout(ColorChoice::Auto);
+    let formatter = Terminal::new(theme, stream);
+    highlighter
+        .highlight_to_writer(language, &formatter, &config, &mut std::io::sink())
+        .unwrap();
+    println!();
+}
+
+pub fn write_example_config(filename: &Path) -> anyhow::Result<()> {
+    let mut file = std::fs::File::create_new(filename)
+        .context(format!("Failed creating config file {:?}", filename))?;
+    file.write_all(get_example_config_str().as_bytes())?;
     Ok(())
 }
 
