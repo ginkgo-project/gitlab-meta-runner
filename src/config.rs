@@ -358,8 +358,10 @@ pub fn get_example_config_str() -> String {
             .as_table_mut()
             .unwrap(),
     );
-    annotate_toml_table::<gitlab_config::Runner>(
-        document.get_mut("runner").unwrap().as_table_mut().unwrap(),
+    let runner = document.get_mut("runner").unwrap().as_table_mut().unwrap();
+    annotate_toml_table::<gitlab_config::Runner>(runner);
+    annotate_toml_table::<gitlab_config::CustomExecutor>(
+        runner.get_mut("custom").unwrap().as_table_mut().unwrap(),
     );
     document.to_string()
 }
