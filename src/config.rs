@@ -88,9 +88,9 @@ impl<'de> serde::Deserialize<'de> for BoolOrString {
 pub struct GitLabRunnerInstance {
     /// Tags whose associated jobs will be run by this runner
     pub tags: Vec<String>,
-    /// Order in which the instances' launch processes should be executed
-    /// All jobs without an order will be launched last
-    pub launch_order: Option<u32>,
+    /// Priority in which the instances' launch processes should be executed, higher priority means earlier launch.
+    /// All jobs without a priority will be launched last
+    pub launch_priority: Option<u32>,
     /// Variables to be expanded in the template instantiation
     /// Naming to avoid confusing with environment variables
     pub config_variables: HashMap<String, String>,
@@ -241,7 +241,7 @@ pub fn get_default_config() -> GitLabRunnersConfig {
             "test-runner".to_owned(),
             GitLabRunnerInstance {
                 tags: vec!["tag-1".to_owned(), "tag-2".to_owned()],
-                launch_order: None,
+                launch_priority: None,
                 config_variables: [("VARIABLE", "value")]
                     .map(|(k, v)| (k.to_owned(), v.to_owned()))
                     .into_iter()
