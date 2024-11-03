@@ -11,6 +11,7 @@ clap = { version = "4.5.17", features = ["derive", "string"] }
 clap-verbosity-flag = "2.2.1"
 colored = "2.1.0"
 dirs = "5.0.1"
+documented = "0.8.0"
 futures = "0.3.30"
 gitlab = "0.1705.0"
 http = "1.1.0"
@@ -21,6 +22,8 @@ serde_derive = "1.0.210"
 serde_json = "1.0.128"
 shellexpand = "3.1.0"
 simple_logger = { version = "5.0.0", features = ["stderr"] }
+struct-field-names-as-array = "0.3.0"
 tokio = { version = "1.40.0", features = ["full"] }
 tokio-util = "0.7.12"
 toml = "0.8.19"
+toml_edit = "0.22.22"
