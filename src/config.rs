@@ -1,5 +1,10 @@
 use anyhow::Context;
 use documented::DocumentedFields;
+use inkjet::{
+    formatter::Terminal,
+    theme::{vendored, Theme},
+    Highlighter, Language,
+};
 use itertools::Itertools;
 use log::warn;
 use std::{
@@ -9,6 +14,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use struct_field_names_as_array::FieldNamesAsArray;
+use termcolor::{ColorChoice, StandardStream};
 use toml_edit::{DocumentMut, RawString};
 
 use serde::{de::Error, Deserializer, Serializer};
@@ -356,6 +362,19 @@ pub fn get_example_config_str() -> String {
         document.get_mut("runner").unwrap().as_table_mut().unwrap(),
     );
     document.to_string()
+}
+
+pub fn print_example_config_highlighted() {
+    let config = get_example_config_str();
+    let mut highlighter = Highlighter::new();
+    let language = Language::Toml;
+    let theme: Theme = Theme::from_helix(vendored::BASE16_TERMINAL).unwrap();
+    let stream = StandardStream::stdout(ColorChoice::Auto);
+    let formatter = Terminal::new(theme, stream);
+    highlighter
+        .highlight_to_writer(language, &formatter, &config, &mut std::io::sink())
+        .unwrap();
+    println!();
 }
 
 pub fn write_example_config(filename: &Path) -> anyhow::Result<()> {

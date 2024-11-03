@@ -15,6 +15,7 @@ documented = "0.8.0"
 futures = "0.3.30"
 gitlab = "0.1705.0"
 http = "1.1.0"
+inkjet = { version = "0.11.1", features = ["language-toml", "theme", "terminal"] }
 itertools = "0.13.0"
 log = "0.4.22"
 serde = "1.0.210"
@@ -23,6 +24,7 @@ serde_json = "1.0.128"
 shellexpand = "3.1.0"
 simple_logger = { version = "5.0.0", features = ["stderr"] }
 struct-field-names-as-array = "0.3.0"
+termcolor = "1.4.1"
 tokio = { version = "1.40.0", features = ["full"] }
 tokio-util = "0.7.12"
 toml = "0.8.19"
