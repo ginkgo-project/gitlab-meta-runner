@@ -192,16 +192,26 @@ async fn run_impl(paths: &cli::Paths, state: &MetaRunnerState) -> anyhow::Result
             instance,
             PrintableJobVec { jobs }
         );
-        let instantiated_config =
-            expand_launch_config_template(paths, &state.config, name, instance, group_size)
-                .unwrap(); // this can't fail because we ran check_config::check
         queue.push(async move {
             join_all(
                 (0..jobs.len())
                     .into_iter()
                     .chunks(group_size as usize)
                     .into_iter()
-                    .map(|_| async { launch_runner(&instantiated_config).await }),
+                    .map(|chunk| {
+                        let count = chunk.count();
+                        async move {
+                            let instantiated_config = expand_launch_config_template(
+                                paths,
+                                &state.config,
+                                name,
+                                instance,
+                                count,
+                            )
+                            .unwrap(); // this can't fail because we ran check_config::check
+                            launch_runner(&instantiated_config).await
+                        }
+                    }),
             )
             .await
             .into_iter()
