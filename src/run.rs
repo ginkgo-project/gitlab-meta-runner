@@ -65,7 +65,7 @@ fn find_match<'a>(
         })
         .min_by_key(|i| i.1.tags.len())
         .or_else(|| {
-            info!("Could not find a suitable runner for pending job {:?}", job);
+            debug!("Could not find a suitable runner for pending job {:?}", job);
             None
         })
 }
