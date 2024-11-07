@@ -75,7 +75,8 @@ pub fn expand_runner_config_template(
             .environment
             .as_ref()
             .map(|m| m.iter().map(|v| string_expand(v)).collect())
-            .transpose()?,
+            .transpose()
+            .context("environment")?,
         executor: match &config.executor {
             Executor::Custom {
                 custom:
@@ -143,14 +144,17 @@ pub fn expand_executor_config_template(
             .transpose()
             .context("image_tmp_dir")?,
         pull_policy: executor.pull_policy,
-        apptainer_executable: executor.apptainer_executable.clone(),
+        apptainer_executable: string_expand(&executor.apptainer_executable)
+            .context("apptainer_executable")?
+            .into(),
         gpu_amd: expand_to_bool(&executor.gpu_amd).context("gpu_amd")?,
         gpu_nvidia: expand_to_bool(&executor.gpu_nvidia).context("gpu_nvidia")?,
         mount: executor
             .mount
             .iter()
             .map(|v| string_expand(v))
-            .collect::<anyhow::Result<Vec<_>>>()?,
+            .collect::<anyhow::Result<Vec<_>>>()
+            .context("mount")?,
         builds_dir: string_expand(
             executor
                 .builds_dir
@@ -195,7 +199,9 @@ pub fn expand_launch_config_template(
         v.into_iter().map(|s| string_expand(s)).collect()
     };
     Ok(GitLabLaunchConfig {
-        executable: launch.executable.clone(),
+        executable: string_expand(&launch.executable)
+            .context("executable")?
+            .into(),
         args: string_array_expand(&launch.args).context("args")?,
         workdir: optional_string_expand(&launch.workdir).context("workdir")?,
         stdin: optional_string_expand(&launch.stdin).context("stdin")?,
