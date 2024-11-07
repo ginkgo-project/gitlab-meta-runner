@@ -110,7 +110,7 @@ pub struct GitLabRunnerInstance {
 
 #[derive(Debug, DocumentedFields, FieldNamesAsArray, Deserialize, Serialize)]
 pub struct GitLabLaunchConfig {
-    /// Executable name or path, will NOT be variable-expanded
+    /// Executable name or path, will be variable-expanded
     pub executable: String,
     /// Arguments to pass to the executable, they will be variable-expanded
     pub args: Vec<String>,
@@ -150,8 +150,8 @@ pub struct GitLabCustomExecutorConfigTemplate {
     pub image_tmp_dir: Option<String>,
     /// Pull policy to use for images, will NOT be variable-expanded
     pub pull_policy: GitLabExecutorPullPolicy,
-    /// Path to the apptainer executable (may be relative to workdir or $PATH), will NOT be variable-expanded
-    pub apptainer_executable: PathBuf,
+    /// Path to the apptainer executable (may be relative to workdir or $PATH), will be variable-expanded
+    pub apptainer_executable: String,
     #[serde(default = "false_bool_or_string")]
     /// Mount AMD GPU devices, will be variable-expanded
     pub gpu_amd: BoolOrString,

@@ -57,7 +57,7 @@ interval = 30
 # - Any variables defined in runners.<runner_name>.config_variables
 # - Any environment variables provided by gitlab-runner to this custom executor
 [launch]
-# Executable name or path, will NOT be variable-expanded
+# Executable name or path, will be variable-expanded
 executable = "sbatch"
 # Arguments to pass to the executable, they will be variable-expanded
 args = []
@@ -91,7 +91,7 @@ image_cache_dir = "$HOME/image_cache"
 image_tmp_dir = "$HOME/image_tmp"
 # Pull policy to use for images, will NOT be variable-expanded
 pull_policy = "if-not-present"
-# Path to the apptainer executable (may be relative to workdir or $PATH), will NOT be variable-expanded
+# Path to the apptainer executable (may be relative to workdir or $PATH), will be variable-expanded
 apptainer_executable = "apptainer"
 # Mount AMD GPU devices, will be variable-expanded
 gpu_amd = false
