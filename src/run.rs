@@ -65,23 +65,22 @@ fn find_match<'a>(
         })
         .min_by_key(|i| i.1.tags.len())
         .or_else(|| {
-            info!("Could not find a suitable runner for pending job {:?}", job);
+            debug!("Could not find a suitable runner for pending job {:?}", job);
             None
         })
 }
 
 async fn check_jobs<'a>(
     state: &'a MetaRunnerState,
-) -> anyhow::Result<Vec<(&'a String, &'a GitLabRunnerInstance, Job)>> {
+) -> anyhow::Result<(Vec<(&'a String, &'a GitLabRunnerInstance, Job)>, Vec<Job>)> {
     let jobs = fetch_pending_project_jobs(&state.client, &state.project).await?;
     Ok(jobs
         .into_iter()
         .filter(|job| !state.successful_job_ids.contains(&job.id))
-        .filter_map(|job| match find_match(&state.config.runners, &job) {
-            None => None,
-            Some((name, instance)) => Some((name, instance, job)),
-        })
-        .collect())
+        .partition_map(|job| match find_match(&state.config.runners, &job) {
+            None => Either::Right(job),
+            Some((name, instance)) => Either::Left((name, instance, job)),
+        }))
 }
 
 async fn launch_runner(config: &GitLabLaunchConfig) -> anyhow::Result<()> {
@@ -169,7 +168,7 @@ impl Display for PrintableJobVec<'_> {
 }
 
 async fn run_impl(paths: &cli::Paths, state: &MetaRunnerState) -> anyhow::Result<Vec<u64>> {
-    let matched_jobs = check_jobs(state).await?;
+    let (matched_jobs, ignored_jobs) = check_jobs(state).await?;
     // Group jobs by runner instance
     let mut grouped_matched_jobs = HashMap::new();
     for (name, instance, job) in matched_jobs.iter() {
@@ -241,6 +240,8 @@ async fn run_impl(paths: &cli::Paths, state: &MetaRunnerState) -> anyhow::Result
             )
         }
     }
+    // ignore any jobs that we couldn't find a runner for
+    successful.extend(ignored_jobs.into_iter().map(|job| job.id));
     Ok(successful)
 }
 
