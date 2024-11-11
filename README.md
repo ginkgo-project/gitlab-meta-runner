@@ -99,6 +99,8 @@ gpu_amd = false
 gpu_nvidia = false
 # Additional bind mounts to use in the container, every individual entry will be variable-expanded
 mount = []
+# Custom string whose variable-expanded value will be reported in the driver name in the config stage
+description = "Slurm job $SLURM_JOB_ID"
 
 # Configuration template for gitlab-runner config file
 # It will be instantiated for every runner in the runners array,
