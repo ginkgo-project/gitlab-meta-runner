@@ -125,7 +125,7 @@ pub struct GitLabLaunchConfig {
     pub group_size: usize,
 }
 
-#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
+#[derive(Debug, Copy, Clone, Deserialize, Serialize, PartialEq)]
 pub enum GitLabExecutorPullPolicy {
     #[serde(rename = "always")]
     /// Always pull an image, regardless of whether its file is present
@@ -434,4 +434,42 @@ pub fn write_gitlab_runner_configurations(
         .as_bytes(),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, DocumentedFields, FieldNamesAsArray, Serialize, Deserialize, PartialEq)]
+    struct ExampleStruct {
+        /// Example documentation 1
+        /// Line 2
+        name: String,
+        /// Example documentation 2
+        map: HashMap<String, u32>,
+    }
+
+    #[test]
+    fn annotate_toml() {
+        let mut document = "name = \"name\"\n[map]\nvalue1 = 1\nvalue2 = 2\n"
+            .parse::<DocumentMut>()
+            .unwrap();
+        annotate_toml_table::<ExampleStruct>(document.as_table_mut());
+        assert_eq!(document.to_string(), "# Example documentation 1\n# Line 2\nname = \"name\"\n# Example documentation 2\n[map]\nvalue1 = 1\nvalue2 = 2\n");
+        assert_eq!(
+            toml::from_str::<ExampleStruct>(&document.to_string()).unwrap(),
+            ExampleStruct {
+                name: "name".into(),
+                map: [("value1".to_owned(), 1), ("value2".to_owned(), 2)]
+                    .into_iter()
+                    .collect()
+            }
+        );
+    }
+
+    #[test]
+    fn example_config() {
+        let config_str = get_example_config_str();
+        toml::from_str::<GitLabRunnersConfig>(&config_str).unwrap();
+    }
 }
