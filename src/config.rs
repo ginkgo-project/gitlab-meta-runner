@@ -125,7 +125,7 @@ pub struct GitLabLaunchConfig {
     pub group_size: usize,
 }
 
-#[derive(Debug, Copy, Clone, Deserialize, Serialize)]
+#[derive(Debug, Copy, Clone, Deserialize, Serialize, PartialEq)]
 pub enum GitLabExecutorPullPolicy {
     #[serde(rename = "always")]
     /// Always pull an image, regardless of whether its file is present
