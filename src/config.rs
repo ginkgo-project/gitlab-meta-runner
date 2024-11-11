@@ -161,6 +161,8 @@ pub struct GitLabCustomExecutorConfigTemplate {
     #[serde(default = "Vec::new")]
     /// Additional bind mounts to use in the container, every individual entry will be variable-expanded
     pub mount: Vec<String>,
+    /// Custom string whose variable-expanded value will be reported in the driver name in the config stage
+    pub description: Option<String>,
 }
 
 /// GitLabCustomExcutorConfigTemplate after variable expansion
@@ -176,6 +178,7 @@ pub struct GitLabCustomExecutorConfig {
     pub mount: Vec<String>,
     pub builds_dir: PathBuf,
     pub cache_dir: PathBuf,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, DocumentedFields, FieldNamesAsArray, Deserialize, Serialize)]
@@ -289,6 +292,7 @@ pub fn get_example_config() -> GitLabRunnersConfig {
             gpu_amd: BoolOrString::Bool(false),
             gpu_nvidia: BoolOrString::Bool(false),
             mount: Vec::new(),
+            description: Some("Slurm job $SLURM_JOB_ID".into()),
         }),
     }
 }

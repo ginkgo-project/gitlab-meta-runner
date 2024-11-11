@@ -12,6 +12,7 @@ use crate::gitlab_config::Executor;
 use crate::gitlab_config::Runner;
 use anyhow::anyhow;
 use anyhow::Context;
+use log::warn;
 
 fn string_expand_impl<'a, F: Fn(&str) -> Option<&'a str>>(
     string: &str,
@@ -166,6 +167,12 @@ pub fn expand_executor_config_template(
         cache_dir: string_expand(&config.runner.cache_dir)
             .context("cache_dir")?
             .into(),
+        // This one needs to be infallible to handle check-config
+        description: executor.description.as_ref().map(|v| {
+            string_expand(v)
+                .map_err(|e| warn!("Custom executor description could not be expanded\n(this is not necessarily an error if you use environment variables that are only available at runner execution in there): {:?}", e))
+                .unwrap_or(v.clone())
+        }),
     })
 }
 

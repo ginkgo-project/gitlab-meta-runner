@@ -45,7 +45,10 @@ fn config_step(context: &JobContext) -> anyhow::Result<()> {
     // append job ID to builds_dir to make unique paths
     let config_obj = json!({
       "driver": {
-        "name": format!("{} custom executor", env!("CARGO_PKG_NAME")),
+        "name": match &context.config.description {
+            None => format!("{} custom executor", env!("CARGO_PKG_NAME")),
+            Some(description) => format!("{} custom executor ({})", env!("CARGO_PKG_NAME"), description)
+        },
         "version": "v1.0.0"
       },
       "builds_dir_is_shared": false,
