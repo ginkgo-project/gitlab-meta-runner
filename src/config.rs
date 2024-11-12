@@ -244,6 +244,7 @@ pub fn get_example_config() -> GitLabRunnersConfig {
         runner: gitlab_config::Runner {
             builds_dir: "$HOME/builds/$NAME/".into(),
             cache_dir: "$HOME/cache/".into(),
+            output_limit: None,
             executor: gitlab_config::Executor::Custom {
                 custom: gitlab_config::CustomExecutor {
                     config_exec: "$THIS".into(),

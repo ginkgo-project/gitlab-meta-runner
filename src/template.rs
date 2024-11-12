@@ -72,6 +72,7 @@ pub fn expand_runner_config_template(
     Ok(Runner {
         builds_dir: string_expand(&config.builds_dir).context("builds_dir")?,
         cache_dir: string_expand(&config.cache_dir).context("cache_dir")?,
+        output_limit: config.output_limit.clone(),
         environment: config
             .environment
             .as_ref()
@@ -269,6 +270,7 @@ mod tests {
         let config = gitlab_config::Runner {
             builds_dir: "~/$FOO/$NAME".into(),
             cache_dir: "$PWD/$BAR".into(),
+            output_limit: Some(10),
             executor: gitlab_config::Executor::Custom {
                 custom: gitlab_config::CustomExecutor {
                     config_exec: "$THIS".into(),
@@ -311,6 +313,7 @@ mod tests {
         let expanded = expanded.unwrap();
         assert_eq!(expanded.builds_dir, format!("{}/foo/name", home));
         assert_eq!(expanded.cache_dir, format!("{}/bar", workdir));
+        assert_eq!(expanded.output_limit, Some(10));
         assert_eq!(expanded.environment, Some(vec!["baz".to_owned()]));
         match expanded.executor {
             Executor::Custom { custom } => {
@@ -343,6 +346,7 @@ mod tests {
             runner: Runner {
                 builds_dir,
                 cache_dir: "".into(),
+                output_limit: None,
                 executor: Executor::Custom {
                     custom: CustomExecutor {
                         config_exec: "".into(),
@@ -499,6 +503,7 @@ mod tests {
             runner: Runner {
                 builds_dir: "".into(),
                 cache_dir: "".into(),
+                output_limit: None,
                 executor: Executor::Custom {
                     custom: CustomExecutor {
                         config_exec: "".into(),

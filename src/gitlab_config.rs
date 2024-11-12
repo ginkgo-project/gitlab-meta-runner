@@ -8,8 +8,10 @@ pub struct Runner {
     pub builds_dir: String,
     /// Directory to use for build caches, will be variable-expanded
     pub cache_dir: String,
-    #[serde(flatten)]
+    /// How many kilobytes of output to collect, will NOT be variable-expanded
+    pub output_limit: Option<u64>,
     /// The executor to use for this runner
+    #[serde(flatten)]
     pub executor: Executor,
     /// Additional environment variables, will be variable-expanded
     pub environment: Option<Vec<String>>,
