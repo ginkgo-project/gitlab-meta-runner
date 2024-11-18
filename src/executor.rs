@@ -150,6 +150,7 @@ async fn prepare_step(context: &JobContext) -> anyhow::Result<()> {
         }
         GitLabExecutorPullPolicy::IfNotPresent => !image_exists,
     };
+    info!("Using image {}", image);
     if !pull_needed {
         info!("No pull necessary");
         return Ok(());
