@@ -104,9 +104,9 @@ fn build_image_pull_url(image_name: &str) -> String {
 }
 
 // This uses docker hub rest api to grab the time from last push.
-fn get_docker_tag_timestamp(pull_url: &str) -> Result<DateTime<Utc>, Box<dyn std::error::Error>> {
+fn get_docker_tag_timestamp(pull_url: &str) -> anyhow::Result<DateTime<Utc>> {
     if !pull_url.contains("docker://") {
-        return Err(format!("only accept docker but it is {}", pull_url).into());
+        return Err(anyhow!("only accept docker but it is {}", pull_url));
     }
     // change the pull_url to the rest API url
     let resturl = pull_url
@@ -127,11 +127,11 @@ fn get_docker_tag_timestamp(pull_url: &str) -> Result<DateTime<Utc>, Box<dyn std
         return Ok(dt_docker);
     }
 
-    return Err("json[\"tag_last_pushed\"] is not available".into());
+    return Err(anyhow!("json[\"tag_last_pushed\"] is not available"));
 }
 
 // This uses inspect to grab the time from build.
-fn get_sif_build_timestamp(command: &str, sifpath: &str) -> Result<DateTime<Utc>, Box<dyn std::error::Error>> {
+fn get_sif_build_timestamp(command: &PathBuf, sifpath: &PathBuf) -> anyhow::Result<DateTime<Utc>> {
     let output = Command::new(command)
         .arg("inspect")
         .arg("-j")
@@ -152,19 +152,19 @@ fn get_sif_build_timestamp(command: &str, sifpath: &str) -> Result<DateTime<Utc>
                 .output()
                 .expect("Failed to execute command");
             if utc.status.success() {
-                let stdout = String::from_utf8_lossy(&utc.stdout);
+                let stdout = String::from_utf8_lossy(&utc.stdout).to_string();
                 let dt_sif: DateTime<Utc> = stdout.parse()?;
                 debug!("Parsed SIF build datetime {} from {}", dt_sif, stdout);
                 return Ok(dt_sif);
             } else {
-                let stderr = String::from_utf8_lossy(&utc.stderr);
-                return Err(stderr.into());
+                let stderr = String::from_utf8_lossy(&utc.stderr).to_string();
+                return Err(anyhow!(stderr));
             }
         }
-        return Err("json[\"data\"][\"attributes\"][\"labels\"][\"org.label-schema.build-date\"] is not available".into());
+        return Err(anyhow!("json[\"data\"][\"attributes\"][\"labels\"][\"org.label-schema.build-date\"] is not available"));
     }
 
-    return Err(format!("{} inspect failed", command).into());
+    return Err(anyhow!("{} inspect failed", command.display()));
 }
 
 async fn prepare_step(context: &JobContext) -> anyhow::Result<()> {
@@ -208,16 +208,16 @@ async fn prepare_step(context: &JobContext) -> anyhow::Result<()> {
         std::fs::exists(&filepath).context("Failed checking for existence of image file")?;
     let mut dt_docker: Option<DateTime<Utc>> = None;
     if pull_url.contains("docker://") {
-        dt_docker = Some(get_docker_tag_timestamp(pull_url)?);
+        dt_docker = Some(get_docker_tag_timestamp(&pull_url)?);
     }
     let mut dt_sif: Option<DateTime<Utc>> = None;
     if image_exists {
-        dt_sif = Some(get_sif_build_timestamp(&config.apptainer_executable, filepath)?);
+        dt_sif = Some(get_sif_build_timestamp(&config.apptainer_executable, &filepath)?);
     }
     let mut remote_is_newer = false;
     if let (Some(dt_docker_val), Some(dt_sif_val)) = (dt_docker, dt_sif) {
         remote_is_newer = dt_docker_val > dt_sif_val;
-        info!("docker push time: {} and SIF build time: {}, so do we pull? {}", dt_docker_val, dt_sif_val);
+        info!("docker push time: {} and SIF build time: {}, so do we pull? {}", dt_docker_val, dt_sif_val, remote_is_newer);
     }
 
     let pull_needed = match config.pull_policy {
