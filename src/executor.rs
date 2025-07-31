@@ -90,10 +90,11 @@ fn build_image_filename(image_name: &str) -> PathBuf {
 fn build_image_pull_url(image_name: &str) -> String {
     let parts = image_name.split_once(":");
     // if the image name contains a valid URL (based on its protocol name), we use it directly
+    // we add local:// here to avoid the local sif to become non-existed docker hub image.
     match parts {
         Some((protocol, _)) => match protocol {
             "library" | "shub" | "docker" | "docker-archive" | "docker-daemon" | "oci"
-            | "oci-archive" | "http" | "https" | "oras" => return image_name.to_owned(),
+            | "oci-archive" | "http" | "https" | "oras" | "local" => return image_name.to_owned(),
             _ => (),
         },
         _ => (),
