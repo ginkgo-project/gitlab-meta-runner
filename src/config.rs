@@ -133,6 +133,9 @@ pub enum GitLabExecutorPullPolicy {
     #[serde(rename = "if-not-present")]
     /// Only pull an image if the image file is not present
     IfNotPresent,
+    #[serde(rename = "try-update")]
+    /// Only pull an image when the image is newer than local SIF. It currently only works with docker hub as remote.
+    TryUpdate,
     #[serde(rename = "never")]
     /// Never pull an image
     Never,

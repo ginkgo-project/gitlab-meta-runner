@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Context};
 use log::{debug, info};
-use std::{ffi::OsStr, fs, path::PathBuf, process::Stdio};
+use std::{ffi::OsStr, fs, path::PathBuf, process::Stdio, process::Command};
+use reqwest::blocking;
+use serde_json::Value;
+use chrono::{DateTime, Utc};
 
 use serde_json::{json, to_string_pretty};
 
@@ -99,6 +102,70 @@ fn build_image_pull_url(image_name: &str) -> String {
     format!("docker://{}", image_name)
 }
 
+// This uses docker hub rest api to grab the time from last push.
+fn get_docker_tag_timestamp(pull_url: &str) -> Result<DateTime<Utc>, Box<dyn std::error::Error>> {
+    if !pull_url.contains("docker://") {
+        return Err(format!("only accept docker but it is {}", pull_url).into());
+    }
+    // change the pull_url to the rest API url
+    let resturl = pull_url
+        .replace("docker://", "<tmp>")
+        .replace(":", "/tags/")
+        .replace("<tmp>", "https://hub.docker.com/v2/repositories/");
+
+    debug!("Asking {} as rest api from {}", resturl, pull_url);
+
+    // Use RestAPI
+    let response = blocking::get(&resturl)?;
+    let body: Value = response.json()?;
+
+    // Extract and parse the "tag_last_pushed" field
+    if let Some(value) = body["tag_last_pushed"].as_str() {
+        let dt_docker: DateTime<Utc> = value.parse()?;
+        debug!("Parsed docker push datetime {} from {}", dt_docker, value);
+        return Ok(dt_docker);
+    }
+
+    return Err("json[\"tag_last_pushed\"] is not available".into());
+}
+
+// This uses inspect to grab the time from build.
+fn get_sif_build_timestamp(command: &str, sifpath: &str) -> Result<DateTime<Utc>, Box<dyn std::error::Error>> {
+    let output = Command::new(command)
+        .arg("inspect")
+        .arg("-j")
+        .arg(sifpath)
+        .output()
+        .expect("Failed to execute command");
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json: Value = serde_json::from_str(&stdout)?;
+        if let Some(value) = json["data"]["attributes"]["labels"]["org.label-schema.build-date"].as_str() {
+            // because CEST is not in chrono or chrono_tz, so use date to change it
+            let utc = Command::new("date")
+                .arg("-u")
+                .arg("-d")
+                .arg(value.replace("_", " "))
+                .arg("+%Y-%m-%dT%H:%M:%SZ")
+                .output()
+                .expect("Failed to execute command");
+            if utc.status.success() {
+                let stdout = String::from_utf8_lossy(&utc.stdout);
+                let dt_sif: DateTime<Utc> = stdout.parse()?;
+                debug!("Parsed SIF build datetime {} from {}", dt_sif, stdout);
+                return Ok(dt_sif);
+            } else {
+                let stderr = String::from_utf8_lossy(&utc.stderr);
+                return Err(stderr.into());
+            }
+        }
+        return Err("json[\"data\"][\"attributes\"][\"labels\"][\"org.label-schema.build-date\"] is not available".into());
+    }
+
+    return Err(format!("{} inspect failed", command).into());
+}
+
 async fn prepare_step(context: &JobContext) -> anyhow::Result<()> {
     debug!(
         "Executing prepare step for job {} with runner {}",
@@ -138,6 +205,20 @@ async fn prepare_step(context: &JobContext) -> anyhow::Result<()> {
 
     let image_exists =
         std::fs::exists(&filepath).context("Failed checking for existence of image file")?;
+    let mut dt_docker: Option<DateTime<Utc>> = None;
+    if pull_url.contains("docker://") {
+        dt_docker = Some(get_docker_tag_timestamp(pull_url)?);
+    }
+    let mut dt_sif: Option<DateTime<Utc>> = None;
+    if image_exists {
+        dt_sif = Some(get_sif_build_timestamp(&config.apptainer_executable, filepath)?);
+    }
+    let mut remote_is_newer = false;
+    if let (Some(dt_docker_val), Some(dt_sif_val)) = (dt_docker, dt_sif) {
+        remote_is_newer = dt_docker_val > dt_sif_val;
+        info!("docker push time: {} and SIF build time: {}, so do we pull? {}", dt_docker_val, dt_sif_val);
+    }
+
     let pull_needed = match config.pull_policy {
         GitLabExecutorPullPolicy::Always => true,
         GitLabExecutorPullPolicy::Never => {
@@ -149,6 +230,7 @@ async fn prepare_step(context: &JobContext) -> anyhow::Result<()> {
             false
         }
         GitLabExecutorPullPolicy::IfNotPresent => !image_exists,
+        GitLabExecutorPullPolicy::TryUpdate => !image_exists || remote_is_newer, 
     };
     info!("Using image {}", image);
     if !pull_needed {
