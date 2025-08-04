@@ -87,10 +87,11 @@ fn build_image_filename(image_name: &str) -> PathBuf {
 fn build_image_pull_url(image_name: &str) -> String {
     let parts = image_name.split_once(":");
     // if the image name contains a valid URL (based on its protocol name), we use it directly
+    // we add local:// here to avoid the local sif to become non-existed docker hub image.
     match parts {
         Some((protocol, _)) => match protocol {
             "library" | "shub" | "docker" | "docker-archive" | "docker-daemon" | "oci"
-            | "oci-archive" | "http" | "https" | "oras" => return image_name.to_owned(),
+            | "oci-archive" | "http" | "https" | "oras" | "local" => return image_name.to_owned(),
             _ => (),
         },
         _ => (),
@@ -138,8 +139,10 @@ async fn prepare_step(context: &JobContext) -> anyhow::Result<()> {
 
     let image_exists =
         std::fs::exists(&filepath).context("Failed checking for existence of image file")?;
+    let is_local = image.contains("local://");
     let pull_needed = match config.pull_policy {
-        GitLabExecutorPullPolicy::Always => true,
+        // only pull when it is remote image
+        GitLabExecutorPullPolicy::Always => !is_local,
         GitLabExecutorPullPolicy::Never => {
             if !image_exists {
                 Err(anyhow!(
