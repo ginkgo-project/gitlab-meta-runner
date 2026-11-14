@@ -3,7 +3,7 @@ use itertools::{Either, Itertools};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     fmt::Display,
-    time::Duration,
+    time::{Duration, Instant},
     u32,
 };
 use tokio_util::sync::CancellationToken;
@@ -11,9 +11,10 @@ use tokio_util::sync::CancellationToken;
 use async_process::{Command, Stdio};
 use futures::{future::join_all, select, AsyncReadExt, AsyncWriteExt, FutureExt};
 use gitlab::AsyncGitlab;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use tokio::{
     signal,
+    task::JoinHandle,
     time::{self, MissedTickBehavior},
 };
 
@@ -21,6 +22,9 @@ use crate::{
     assign::{assign_jobs, candidates, free_slots, Assignment},
     check_config, cli,
     config::{read_config, GitLabLaunchConfig, GitLabLaunchCountConfig, GitLabRunnersConfig},
+    failure::{
+        is_access_failure, retry_delay, AccessFailureTracker, PermanentError, ACCESS_FAILURE_GRACE,
+    },
     gitlab_wrap::{fetch_pending_project_jobs, fetch_project, init_client, Job, Project},
     template::expand_launch_config_template,
 };
@@ -34,21 +38,96 @@ struct MetaRunnerState {
     successful_job_ids: HashSet<u64>,
 }
 
-async fn initialize(paths: &cli::Paths) -> anyhow::Result<MetaRunnerState> {
-    let config = read_config(&paths.config_file).context(format!(
+fn read_runner_config(paths: &cli::Paths) -> anyhow::Result<GitLabRunnersConfig> {
+    read_config(&paths.config_file).context(format!(
         "Failed reading configuration {:?}",
         paths.config_file
-    ))?;
+    ))
+}
+
+/// Connects to GitLab and looks up the configured project
+async fn connect(config: &GitLabRunnersConfig) -> anyhow::Result<(AsyncGitlab, Project)> {
     let client = init_client(&config.hostname, &config.management_token)
         .await
         .context("Failed configuring GitLab API client")?;
-    let project = fetch_project(&client, &config.project).await?;
-    Ok(MetaRunnerState {
+    let project = fetch_project(&client, &config.project)
+        .await
+        .context(format!("Failed fetching project {}", config.project))?;
+    Ok((client, project))
+}
+
+fn new_state(
+    config: GitLabRunnersConfig,
+    client: AsyncGitlab,
+    project: Project,
+) -> MetaRunnerState {
+    MetaRunnerState {
         config,
         client,
         project,
         successful_job_ids: HashSet::new(),
-    })
+    }
+}
+
+/// The error to report once GitLab has been refusing access for longer than ACCESS_FAILURE_GRACE
+fn access_refused() -> PermanentError {
+    PermanentError(format!(
+        "GitLab refused access for {} minutes, check the management token and its project access",
+        ACCESS_FAILURE_GRACE.as_secs() / 60
+    ))
+}
+
+async fn initialize(paths: &cli::Paths) -> anyhow::Result<MetaRunnerState> {
+    let config = read_runner_config(paths)?;
+    let (client, project) = connect(&config).await?;
+    Ok(new_state(config, client, project))
+}
+
+/// Like `initialize`, but retries connecting to GitLab with increasing delays.
+/// Gives up with a permanent error if GitLab keeps refusing access for ACCESS_FAILURE_GRACE.
+async fn initialize_with_retry(paths: &cli::Paths) -> anyhow::Result<MetaRunnerState> {
+    let config =
+        read_runner_config(paths).context(PermanentError("Invalid configuration".into()))?;
+    let mut access_failures = AccessFailureTracker::new(ACCESS_FAILURE_GRACE);
+    let mut attempt = 0;
+    loop {
+        match connect(&config).await {
+            Ok((client, project)) => return Ok(new_state(config, client, project)),
+            Err(e) => {
+                if is_access_failure(&e) && access_failures.record_failure(Instant::now()) {
+                    return Err(e.context(access_refused()));
+                }
+                let delay = retry_delay(attempt);
+                warn!(
+                    "Failed connecting to GitLab, retrying in {} s: {:?}",
+                    delay.as_secs(),
+                    e
+                );
+                time::sleep(delay).await;
+                attempt = attempt.saturating_add(1);
+            }
+        }
+    }
+}
+
+/// Waits until either `shutdown` completes, then cancels the poll task and waits for it,
+/// or the poll task ends on its own, which is always an error: the task's own error, a panic, or an unexpected stop.
+async fn supervise<F: std::future::Future<Output = ()>>(
+    mut task: JoinHandle<anyhow::Result<()>>,
+    shutdown: F,
+    cancel: CancellationToken,
+) -> anyhow::Result<()> {
+    tokio::select! {
+        _ = shutdown => {
+            cancel.cancel();
+            task.await.context("Failed waiting for poll task to finish")?
+        }
+        result = &mut task => match result {
+            Ok(Ok(())) => Err(anyhow!("Poll task stopped unexpectedly")),
+            Ok(Err(e)) => Err(e),
+            Err(e) => Err(anyhow::Error::new(e).context("Poll task panicked")),
+        },
+    }
 }
 
 /// Timeout (in seconds) for count commands without an explicit timeout
@@ -339,8 +418,8 @@ async fn run_impl(paths: &cli::Paths, state: &MetaRunnerState) -> anyhow::Result
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 8)]
 pub async fn run(paths: cli::Paths) -> anyhow::Result<()> {
-    check_config::check(&paths)?;
-    let mut state = initialize(&paths).await?;
+    check_config::check(&paths).context(PermanentError("Invalid configuration".into()))?;
+    let mut state = initialize_with_retry(&paths).await?;
     let cancel_token = CancellationToken::new();
     let job_cancel_token = cancel_token.clone();
 
@@ -348,6 +427,7 @@ pub async fn run(paths: cli::Paths) -> anyhow::Result<()> {
         let poll_duration = Duration::from_secs(state.config.poll.interval as u64);
         let mut timer = time::interval(poll_duration);
         timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut access_failures = AccessFailureTracker::new(ACCESS_FAILURE_GRACE);
         loop {
             // Handle cancellation
             select! {
@@ -361,26 +441,31 @@ pub async fn run(paths: cli::Paths) -> anyhow::Result<()> {
             info!("Polling for jobs...");
             let result = future::timeout(poll_duration, run_impl(&paths, &state)).await;
             match result {
-                Ok(Ok(new_successful_jobs)) => state
-                    .successful_job_ids
-                    .extend(new_successful_jobs.into_iter()),
-                Ok(Err(e)) => error!("Failed poll: {:?}", e),
+                Ok(Ok(new_successful_jobs)) => {
+                    access_failures.record_success();
+                    state
+                        .successful_job_ids
+                        .extend(new_successful_jobs.into_iter())
+                }
+                Ok(Err(e)) => {
+                    if is_access_failure(&e) && access_failures.record_failure(Instant::now()) {
+                        return Err(e.context(access_refused()));
+                    }
+                    error!("Failed poll: {:?}", e)
+                }
                 Err(_) => error!("Poll timed out"),
             };
         }
+        Ok(())
     });
 
-    match signal::ctrl_c().await {
-        Ok(()) => info!("Received shutdown signal (Ctrl+C), cancelling poll task"),
-        Err(_) => error!("Failed to listen for shutdown signal, shutting down anyways."),
-    }
-
-    // the result of the shutdown signal send doesn't matter, since if it fails, the task already hung up
-    cancel_token.cancel();
-    task.await
-        .context("Failed waiting for poll task to finish")?;
-
-    Ok(())
+    let shutdown = async {
+        match signal::ctrl_c().await {
+            Ok(()) => info!("Received shutdown signal (Ctrl+C), cancelling poll task"),
+            Err(_) => error!("Failed to listen for shutdown signal, shutting down anyways."),
+        }
+    };
+    supervise(task, shutdown, cancel_token).await
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 8)]
@@ -395,6 +480,8 @@ pub async fn run_single(paths: &cli::Paths) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::config::GitLabLaunchCountConfig;
+    use crate::failure::{exit_code, PermanentError, EXIT_PERMANENT};
+    use std::future::pending;
     use std::time::Instant;
 
     fn count_config(
@@ -454,5 +541,46 @@ mod tests {
         let handled = handled_job_ids(vec![1, 2], &unmatched);
         assert_eq!(handled, vec![1, 2, 3]);
         assert!(!handled.contains(&4));
+    }
+
+    #[tokio::test]
+    async fn supervise_returns_task_error() {
+        let task = tokio::spawn(async {
+            Err(anyhow!("401 Unauthorized").context(PermanentError("token rejected".into())))
+        });
+        let result = supervise(task, pending::<()>(), CancellationToken::new()).await;
+        assert_eq!(exit_code(&result.unwrap_err()), EXIT_PERMANENT);
+    }
+
+    #[tokio::test]
+    async fn supervise_reports_panic() {
+        let task = tokio::spawn(async {
+            if true {
+                panic!("bug in the poll task");
+            }
+            Ok(())
+        });
+        let result = supervise(task, pending::<()>(), CancellationToken::new()).await;
+        assert_eq!(exit_code(&result.unwrap_err()), 1);
+    }
+
+    #[tokio::test]
+    async fn supervise_reports_unexpected_end() {
+        let task = tokio::spawn(async { Ok(()) });
+        let result = supervise(task, pending::<()>(), CancellationToken::new()).await;
+        assert_eq!(exit_code(&result.unwrap_err()), 1);
+    }
+
+    #[tokio::test]
+    async fn supervise_cancels_on_shutdown() {
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(async move {
+            task_cancel.cancelled().await;
+            Ok(())
+        });
+        let result = supervise(task, async {}, cancel.clone()).await;
+        assert!(result.is_ok(), "{:?}", result);
+        assert!(cancel.is_cancelled());
     }
 }
