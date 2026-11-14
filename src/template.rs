@@ -5,6 +5,7 @@ use crate::config::get_generated_config_file_path;
 use crate::config::BoolOrString;
 use crate::config::GitLabCustomExecutorConfig;
 use crate::config::GitLabLaunchConfig;
+use crate::config::GitLabLaunchCountConfig;
 use crate::config::GitLabRunnerInstance;
 use crate::config::GitLabRunnersConfig;
 use crate::gitlab_config::CustomExecutor;
@@ -215,13 +216,27 @@ pub fn expand_launch_config_template(
         stdin: optional_string_expand(&launch.stdin).context("stdin")?,
         timeout: launch.timeout,
         group_size: launch.group_size,
+        count: launch
+            .count
+            .as_ref()
+            .map(|count| -> anyhow::Result<_> {
+                Ok(GitLabLaunchCountConfig {
+                    executable: string_expand(&count.executable).context("count.executable")?,
+                    args: string_array_expand(&count.args).context("count.args")?,
+                    timeout: count.timeout,
+                })
+            })
+            .transpose()?,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{
-        config::{GitLabCustomExecutorConfigTemplate, GitLabExecutorPullPolicy, GitLabPollConfig},
+        config::{
+            GitLabCustomExecutorConfigTemplate, GitLabExecutorPullPolicy, GitLabLaunchCountConfig,
+            GitLabPollConfig,
+        },
         gitlab_config,
     };
 
@@ -247,6 +262,8 @@ mod tests {
             &GitLabRunnerInstance {
                 tags: Vec::new(),
                 launch_priority: None,
+                match_priority: None,
+                max_launches: None,
                 config_variables: [("ME".to_owned(), "me".to_owned())].into_iter().collect(),
             },
             &|v| match v {
@@ -291,6 +308,8 @@ mod tests {
             &GitLabRunnerInstance {
                 tags: Vec::new(),
                 launch_priority: None,
+                match_priority: None,
+                max_launches: None,
                 config_variables: [
                     ("FOO", "foo"),
                     ("BAR", "bar"),
@@ -388,6 +407,8 @@ mod tests {
             &GitLabRunnerInstance {
                 tags: Vec::new(),
                 launch_priority: None,
+                match_priority: None,
+                max_launches: None,
                 config_variables: [("FOO", "foo"), ("BAR", "bar"), ("BAZ", "baz")]
                     .into_iter()
                     .map(|(a, b)| (a.to_owned(), b.to_owned()))
@@ -445,6 +466,8 @@ mod tests {
             &GitLabRunnerInstance {
                 tags: Vec::new(),
                 launch_priority: None,
+                match_priority: None,
+                max_launches: None,
                 config_variables: [
                     ("FOO", "foo"),
                     ("BAR", "bar"),
@@ -541,6 +564,7 @@ mod tests {
             stdin: None,
             timeout: None,
             group_size: 43,
+            count: None,
         });
         let expanded = expand_launch_config_template(
             &paths,
@@ -549,6 +573,8 @@ mod tests {
             &GitLabRunnerInstance {
                 tags: Vec::new(),
                 launch_priority: None,
+                match_priority: None,
+                max_launches: None,
                 config_variables: [("FOO", "foo"), ("BAR", "bar"), ("BAZ", "baz")]
                     .into_iter()
                     .map(|(a, b)| (a.to_owned(), b.to_owned()))
@@ -572,6 +598,7 @@ mod tests {
         assert_eq!(expanded.stdin, None);
         assert_eq!(expanded.timeout, None);
         assert_eq!(expanded.group_size, 43);
+        assert!(expanded.count.is_none());
     }
 
     #[test]
@@ -594,6 +621,7 @@ mod tests {
             stdin: Some("$FOO $BAR $BAZ".into()),
             timeout: Some(1),
             group_size: 43,
+            count: None,
         });
         let expanded = expand_launch_config_template(
             &paths,
@@ -602,6 +630,8 @@ mod tests {
             &GitLabRunnerInstance {
                 tags: Vec::new(),
                 launch_priority: None,
+                match_priority: None,
+                max_launches: None,
                 config_variables: [("FOO", "foo"), ("BAR", "bar"), ("BAZ", "baz")]
                     .into_iter()
                     .map(|(a, b)| (a.to_owned(), b.to_owned()))
@@ -625,5 +655,45 @@ mod tests {
         assert_eq!(expanded.stdin, Some("foo bar baz".into()));
         assert_eq!(expanded.timeout, Some(1));
         assert_eq!(expanded.group_size, 43);
+    }
+
+    #[test]
+    fn launch_expand_count() {
+        let paths = Paths {
+            config_file: "config-path".into(),
+            data_dir: "data-path".into(),
+            generated_config_file: Some("generated-config-path".into()),
+        };
+        let config = build_dummy_config_launch(GitLabLaunchConfig {
+            executable: "sbatch".into(),
+            args: Vec::new(),
+            workdir: None,
+            stdin: None,
+            timeout: None,
+            group_size: 1,
+            count: Some(GitLabLaunchCountConfig {
+                executable: "$FOO".into(),
+                args: vec!["-n".to_owned(), "x-$NAME".to_owned()],
+                timeout: Some(3),
+            }),
+        });
+        let expanded = expand_launch_config_template(
+            &paths,
+            &config,
+            "name",
+            &GitLabRunnerInstance {
+                tags: Vec::new(),
+                launch_priority: None,
+                match_priority: None,
+                max_launches: None,
+                config_variables: [("FOO".to_owned(), "foo".to_owned())].into_iter().collect(),
+            },
+            1,
+        );
+        assert!(expanded.is_ok(), "{:?}", expanded);
+        let count = expanded.unwrap().count.expect("count should be expanded");
+        assert_eq!(count.executable, "foo");
+        assert_eq!(count.args, vec!["-n".to_owned(), "x-name".to_owned()]);
+        assert_eq!(count.timeout, Some(3));
     }
 }
