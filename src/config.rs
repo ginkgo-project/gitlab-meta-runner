@@ -102,6 +102,13 @@ pub struct GitLabRunnerInstance {
     /// Priority in which the instances' launch processes should be executed, higher priority means earlier launch.
     /// All jobs without a priority will be launched last.
     pub launch_priority: Option<u32>,
+    /// Priority of this runner when several runners match a job, higher priority runners are tried first.
+    /// Runners without a priority are tried last. Ties are broken by fewer tags, then by runner name.
+    pub match_priority: Option<u32>,
+    /// Maximum number of launches of this runner that may be active at the same time, as counted by [launch.count].
+    /// Jobs that would exceed it go to the next matching runner, or wait for the next poll.
+    /// No limit if unset, 0 means the runner does not take new jobs.
+    pub max_launches: Option<usize>,
     /// Variables to be expanded in the template instantiation.
     /// Each value needs to be a string!
     // Naming to avoid confusing with environment variables
@@ -123,6 +130,19 @@ pub struct GitLabLaunchConfig {
     #[serde(default = "one")]
     /// The number of jobs to launch in a single launch command, will NOT be variable-expanded
     pub group_size: usize,
+    /// Command to count the active launches of a runner, required if any runner sets max_launches
+    pub count: Option<GitLabLaunchCountConfig>,
+}
+
+#[derive(Debug, DocumentedFields, FieldNamesAsArray, Deserialize, Serialize)]
+pub struct GitLabLaunchCountConfig {
+    /// Executable name or path, will be variable-expanded.
+    /// It needs to print one line per active launch of the runner $NAME, empty lines are ignored.
+    pub executable: String,
+    /// Arguments to pass to the executable, they will be variable-expanded
+    pub args: Vec<String>,
+    /// The time to wait (in seconds) for the count command to finish, defaults to 10, will NOT be variable-expanded
+    pub timeout: Option<u32>,
 }
 
 #[derive(Debug, Copy, Clone, Deserialize, Serialize, PartialEq)]
@@ -268,6 +288,11 @@ pub fn get_example_config() -> GitLabRunnersConfig {
             ),
             workdir: Some("$HOME/launch".into()),
             group_size: 1,
+            count: Some(GitLabLaunchCountConfig {
+                executable: "squeue".into(),
+                args: strs_to_strings(&["-h", "--me", "-n", "gitlab-meta-runner-$NAME", "-o", "%i"]),
+                timeout: Some(10),
+            }),
         }),
         poll: GitLabPollConfig { interval: 30 },
         runners: [(
@@ -275,6 +300,8 @@ pub fn get_example_config() -> GitLabRunnersConfig {
             GitLabRunnerInstance {
                 tags: vec!["tag-1".to_owned(), "tag-2".to_owned()],
                 launch_priority: Some(10),
+                match_priority: Some(10),
+                max_launches: Some(4),
                 config_variables: [("VARIABLE", "value")]
                     .map(|(k, v)| (k.to_owned(), v.to_owned()))
                     .into_iter()
@@ -353,9 +380,13 @@ pub fn get_example_config_str() -> String {
     annotate_toml_table::<GitLabPollConfig>(
         document.get_mut("poll").unwrap().as_table_mut().unwrap(),
     );
-    annotate_toml_table::<GitLabLaunchConfig>(
-        document.get_mut("launch").unwrap().as_table_mut().unwrap(),
-    );
+    {
+        let launch = document.get_mut("launch").unwrap().as_table_mut().unwrap();
+        annotate_toml_table::<GitLabLaunchConfig>(launch);
+        if let Some(count) = launch.get_mut("count") {
+            annotate_toml_table::<GitLabLaunchCountConfig>(count.as_table_mut().unwrap());
+        }
+    }
     annotate_toml_table::<GitLabCustomExecutorConfigTemplate>(
         document
             .get_mut("executor")

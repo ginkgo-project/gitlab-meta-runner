@@ -1,5 +1,7 @@
 use clap::Parser;
 
+/// Assignment of pending jobs to runner instances
+mod assign;
 /// Tool to check configuration validity
 mod check_config;
 /// All CLI arguments

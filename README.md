@@ -36,6 +36,13 @@ tags = [
 # Priority in which the instances' launch processes should be executed, higher priority means earlier launch.
 # All jobs without a priority will be launched last.
 launch_priority = 10
+# Priority of this runner when several runners match a job, higher priority runners are tried first.
+# Runners without a priority are tried last. Ties are broken by fewer tags, then by runner name.
+match_priority = 10
+# Maximum number of launches of this runner that may be active at the same time, as counted by [launch.count].
+# Jobs that would exceed it go to the next matching runner, or wait for the next poll.
+# No limit if unset, 0 means the runner does not take new jobs.
+max_launches = 4
 
 # Variables to be expanded in the template instantiation.
 # Each value needs to be a string!
@@ -72,6 +79,23 @@ gitlab-runner run-single --config $CONFIG --runner $NAME --max-builds $NUM_JOBS 
 timeout = 300
 # The number of jobs to launch in a single launch command, will NOT be variable-expanded
 group_size = 1
+
+# Command to count the active launches of a runner, required if any runner sets max_launches
+[launch.count]
+# Executable name or path, will be variable-expanded.
+# It needs to print one line per active launch of the runner $NAME, empty lines are ignored.
+executable = "squeue"
+# Arguments to pass to the executable, they will be variable-expanded
+args = [
+    "-h",
+    "--me",
+    "-n",
+    "gitlab-meta-runner-$NAME",
+    "-o",
+    "%i",
+]
+# The time to wait (in seconds) for the count command to finish, defaults to 10, will NOT be variable-expanded
+timeout = 10
 
 # Configuration for the custom executor
 # Some of the configuration variables allow variable expansion from the runner instance variables
