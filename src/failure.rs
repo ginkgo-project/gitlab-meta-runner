@@ -159,6 +159,19 @@ mod tests {
     }
 
     #[test]
+    fn startup_auth_failure_classified() {
+        // the client checks the token on startup, a 401 there arrives wrapped in GitlabError::Api
+        let err = anyhow::Error::new(GitlabError::Api {
+            source: ApiError::<RestError>::GitlabWithStatus {
+                status: StatusCode::UNAUTHORIZED,
+                msg: "invalid_token".into(),
+            },
+        })
+        .context("Failed configuring GitLab API client");
+        assert!(is_access_failure(&err));
+    }
+
+    #[test]
     fn exit_code_permanent_through_context() {
         let permanent = api_error(StatusCode::UNAUTHORIZED)
             .context(PermanentError(

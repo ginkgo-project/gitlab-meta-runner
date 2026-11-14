@@ -23,13 +23,13 @@ mod run;
 /// All functions related to template instantiation/variable expansion
 mod template;
 
-fn main() -> anyhow::Result<()> {
+fn main() {
     let cli = cli::CliOptions::parse();
     simple_logger::SimpleLogger::new()
         .with_level(cli.verbose.log_level_filter())
         .init()
         .unwrap();
-    match cli.command {
+    let result = match cli.command {
         cli::Command::CreateExampleConfig => config::write_example_config(&cli.paths.config_file),
         cli::Command::ShowExampleConfig => Ok(config::print_example_config_highlighted()),
         cli::Command::CheckConfig => check_config::check(&cli.paths),
@@ -38,5 +38,10 @@ fn main() -> anyhow::Result<()> {
         cli::Command::Executor(options) => executor::exec(&cli.paths, &options),
         cli::Command::RunSingle => run::run_single(&cli.paths),
         cli::Command::Run => run::run(cli.paths),
+    };
+    // same output as returning the error from main, but permanent errors get their own exit code
+    if let Err(e) = result {
+        eprintln!("Error: {:?}", e);
+        std::process::exit(failure::exit_code(&e));
     }
 }
