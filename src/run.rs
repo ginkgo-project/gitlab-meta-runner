@@ -1,9 +1,8 @@
 use async_std::future;
 use itertools::{Either, Itertools};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fmt::Display,
-    ops::Deref,
     time::Duration,
     u32,
 };
@@ -19,8 +18,9 @@ use tokio::{
 };
 
 use crate::{
+    assign::{assign_jobs, candidates, free_slots, Assignment},
     check_config, cli,
-    config::{read_config, GitLabLaunchConfig, GitLabRunnerInstance, GitLabRunnersConfig},
+    config::{read_config, GitLabLaunchConfig, GitLabLaunchCountConfig, GitLabRunnersConfig},
     gitlab_wrap::{fetch_pending_project_jobs, fetch_project, init_client, Job, Project},
     template::expand_launch_config_template,
 };
@@ -51,36 +51,104 @@ async fn initialize(paths: &cli::Paths) -> anyhow::Result<MetaRunnerState> {
     })
 }
 
-/// find the runner instance that has the correct tags with the smallest number of non-matching tags
-fn find_match<'a>(
-    instances: &'a HashMap<String, GitLabRunnerInstance>,
-    job: &Job,
-) -> Option<(&'a String, &'a GitLabRunnerInstance)> {
-    let requested_tags: HashSet<_> = job.tags.iter().collect();
-    instances
-        .iter()
-        .filter(|i| {
-            let available_tags: HashSet<_> = i.1.tags.iter().collect();
-            requested_tags.intersection(&available_tags).count() == requested_tags.len()
-        })
-        .min_by_key(|i| i.1.tags.len())
-        .or_else(|| {
-            debug!("Could not find a suitable runner for pending job {:?}", job);
-            None
-        })
+/// Timeout (in seconds) for count commands without an explicit timeout
+const DEFAULT_COUNT_TIMEOUT: u32 = 10;
+
+/// Number of active launches reported by a count command: one per non-blank line
+fn parse_count_output(stdout: &str) -> usize {
+    stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count()
 }
 
-async fn check_jobs<'a>(
-    state: &'a MetaRunnerState,
-) -> anyhow::Result<(Vec<(&'a String, &'a GitLabRunnerInstance, Job)>, Vec<Job>)> {
-    let jobs = fetch_pending_project_jobs(&state.client, &state.project).await?;
-    Ok(jobs
+/// Runs an (already expanded) count command and returns the number of active launches it reports
+async fn count_active_launches(
+    count: &GitLabLaunchCountConfig,
+    workdir: Option<&str>,
+) -> anyhow::Result<usize> {
+    let mut command = Command::new(&count.executable);
+    if let Some(workdir) = workdir {
+        command.current_dir(workdir);
+    }
+    command.args(count.args.iter());
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    command.kill_on_drop(true);
+    let timeout_sec = count.timeout.unwrap_or(DEFAULT_COUNT_TIMEOUT) as u64;
+    let output = time::timeout(Duration::from_secs(timeout_sec), command.output())
+        .await
+        .context(format!("Count command {:?} timed out", command))?
+        .context(format!("Failed running count command {:?}", command))?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "Count command {:?} failed with exit code {}\nstderr:\n{}",
+            command,
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(parse_count_output(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Free job slots of every runner instance with a launch limit that could take one of the jobs.
+/// Runner instances whose active launches can't be counted get no free slots.
+async fn count_free_slots(
+    paths: &cli::Paths,
+    state: &MetaRunnerState,
+    jobs: &[Job],
+    group_size: usize,
+) -> HashMap<String, usize> {
+    let limited: BTreeSet<&String> = jobs
+        .iter()
+        .flat_map(|job| candidates(&state.config.runners, job))
+        .filter(|(_, instance)| instance.max_launches.is_some())
+        .map(|(name, _)| name)
+        .collect();
+    join_all(limited.into_iter().map(|name| async move {
+        let instance = &state.config.runners[name];
+        let max_launches = instance.max_launches.unwrap_or(0);
+        let active =
+            match expand_launch_config_template(paths, &state.config, name, instance, group_size) {
+                Ok(GitLabLaunchConfig {
+                    count: Some(count),
+                    workdir,
+                    ..
+                }) => count_active_launches(&count, workdir.as_deref()).await,
+                Ok(_) => Err(anyhow!("Missing [launch.count] configuration")),
+                Err(e) => Err(e),
+            };
+        let free = match active {
+            Ok(active) => {
+                debug!(
+                    "Runner {} has {} of {} launches active",
+                    name, active, max_launches
+                );
+                free_slots(max_launches, active, group_size)
+            }
+            Err(e) => {
+                error!(
+                    "Failed counting active launches of runner {}, treating it as full: {:?}",
+                    name, e
+                );
+                0
+            }
+        };
+        (name.clone(), free)
+    }))
+    .await
+    .into_iter()
+    .collect()
+}
+
+/// Job IDs that should not be dispatched again: successfully launched and unmatched jobs.
+/// Deferred jobs are left out, so they are retried on the next poll.
+fn handled_job_ids(launched: impl IntoIterator<Item = u64>, unmatched: &[Job]) -> Vec<u64> {
+    launched
         .into_iter()
-        .filter(|job| !state.successful_job_ids.contains(&job.id))
-        .partition_map(|job| match find_match(&state.config.runners, &job) {
-            None => Either::Right(job),
-            Some((name, instance)) => Either::Left((name, instance, job)),
-        }))
+        .chain(unmatched.iter().map(|job| job.id))
+        .collect()
 }
 
 async fn launch_runner(config: &GitLabLaunchConfig) -> anyhow::Result<()> {
@@ -168,29 +236,44 @@ impl Display for PrintableJobVec<'_> {
 }
 
 async fn run_impl(paths: &cli::Paths, state: &MetaRunnerState) -> anyhow::Result<Vec<u64>> {
-    let (matched_jobs, ignored_jobs) = check_jobs(state).await?;
-    // Group jobs by runner instance
-    let mut grouped_matched_jobs = HashMap::new();
-    for (name, instance, job) in matched_jobs.iter() {
-        if let None = grouped_matched_jobs.get(name) {
-            grouped_matched_jobs.insert(name, (instance, Vec::new()));
-        }
-        grouped_matched_jobs.get_mut(name).unwrap().1.push(job);
+    let jobs: Vec<Job> = fetch_pending_project_jobs(&state.client, &state.project)
+        .await?
+        .into_iter()
+        .filter(|job| !state.successful_job_ids.contains(&job.id))
+        .collect();
+    // this unwrap can't fail because we ran check_config::check
+    let group_size = state.config.launch.as_ref().unwrap().group_size;
+    let free = count_free_slots(paths, state, &jobs, group_size).await;
+    let Assignment {
+        assigned,
+        deferred,
+        unmatched,
+    } = assign_jobs(&state.config.runners, jobs, &free);
+    for job in &unmatched {
+        debug!("Could not find a suitable runner for pending job {:?}", job);
+    }
+    if !deferred.is_empty() {
+        info!(
+            "All matching runners are at their launch limit, deferring jobs {}",
+            PrintableJobVec {
+                jobs: &deferred.iter().collect()
+            }
+        );
     }
     // sort descending by priority
-    let mut grouped_matched_jobs: Vec<_> = grouped_matched_jobs.into_iter().collect();
-    grouped_matched_jobs.sort_by_key(|(_, (instance, _))| instance.launch_priority);
+    let mut grouped_matched_jobs = assigned;
+    grouped_matched_jobs.sort_by_key(|(_, instance, _)| instance.launch_priority);
     grouped_matched_jobs.reverse();
     // Dispatch jobs
     let mut queue = Vec::new();
-    // this unwrap can't fail because we ran check_config::check
-    let group_size = state.config.launch.as_ref().unwrap().group_size;
-    for (name, (instance, jobs)) in &grouped_matched_jobs {
+    for (name, instance, jobs) in &grouped_matched_jobs {
         debug!(
             "Using runner {} {:?} to dispatch jobs {}",
             name,
             instance,
-            PrintableJobVec { jobs }
+            PrintableJobVec {
+                jobs: &jobs.iter().collect()
+            }
         );
         queue.push(async move {
             join_all(
@@ -221,8 +304,8 @@ async fn run_impl(paths: &cli::Paths, state: &MetaRunnerState) -> anyhow::Result
     // Collect results from dispatch
     let launch_results: Vec<Vec<anyhow::Result<_>>> = join_all(queue.into_iter()).await;
     let mut successful = Vec::new();
-    for ((name, (_, jobs)), result) in grouped_matched_jobs.iter().zip(launch_results.iter()) {
-        let job_chunks = jobs.into_iter().chunks(group_size as usize);
+    for ((name, _, jobs), result) in grouped_matched_jobs.iter().zip(launch_results.iter()) {
+        let job_chunks = jobs.iter().chunks(group_size as usize);
         let (success, failure): (Vec<_>, Vec<_>) = job_chunks
             .into_iter()
             .zip(result.into_iter())
@@ -231,7 +314,7 @@ async fn run_impl(paths: &cli::Paths, state: &MetaRunnerState) -> anyhow::Result
                 Err(e) => Either::Right((job_chunk, e)),
             });
         if success.len() > 0 {
-            let success_vec = success.into_iter().flatten().map(Deref::deref).collect();
+            let success_vec = success.into_iter().flatten().collect();
             info!(
                 "Launched runner {} for jobs {} successfully",
                 name,
@@ -244,15 +327,14 @@ async fn run_impl(paths: &cli::Paths, state: &MetaRunnerState) -> anyhow::Result
                 "Failed launching runner {} for jobs {}, error message: {:?}",
                 name,
                 PrintableJobVec {
-                    jobs: &f.0.into_iter().map(Deref::deref).collect()
+                    jobs: &f.0.into_iter().collect()
                 },
                 f.1
             )
         }
     }
-    // ignore any jobs that we couldn't find a runner for
-    successful.extend(ignored_jobs.into_iter().map(|job| job.id));
-    Ok(successful)
+    // ignore any jobs that we couldn't find a runner for, but retry deferred jobs
+    Ok(handled_job_ids(successful, &unmatched))
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 8)]
@@ -307,4 +389,70 @@ pub async fn run_single(paths: &cli::Paths) -> anyhow::Result<()> {
     let state = initialize(paths).await?;
     run_impl(paths, &state).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::GitLabLaunchCountConfig;
+    use std::time::Instant;
+
+    fn count_config(
+        executable: &str,
+        args: &[&str],
+        timeout: Option<u32>,
+    ) -> GitLabLaunchCountConfig {
+        GitLabLaunchCountConfig {
+            executable: executable.into(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            timeout,
+        }
+    }
+
+    #[test]
+    fn parse_count_output_ignores_blank_lines() {
+        assert_eq!(parse_count_output("1\n\n2\n  \n"), 2);
+        assert_eq!(parse_count_output(""), 0);
+        assert_eq!(parse_count_output("631475\n"), 1);
+    }
+
+    #[tokio::test]
+    async fn count_runs_command() {
+        let count = count_config("sh", &["-c", "echo a; echo b; echo"], None);
+        let result = count_active_launches(&count, None).await;
+        assert_eq!(result.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn count_fails_on_error_exit() {
+        let count = count_config("false", &[], None);
+        assert!(count_active_launches(&count, None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn count_fails_on_missing_executable() {
+        let count = count_config("/nonexistent/squeue", &[], None);
+        assert!(count_active_launches(&count, None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn count_times_out() {
+        let count = count_config("sleep", &["5"], Some(1));
+        let start = Instant::now();
+        assert!(count_active_launches(&count, None).await.is_err());
+        assert!(start.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn deferred_jobs_not_handled() {
+        let unmatched = vec![Job {
+            id: 3,
+            name: "status".into(),
+            tags: vec!["status-jobs".into()],
+        }];
+        // job 4 was deferred: it is neither launched nor unmatched, so it must stay pending
+        let handled = handled_job_ids(vec![1, 2], &unmatched);
+        assert_eq!(handled, vec![1, 2, 3]);
+        assert!(!handled.contains(&4));
+    }
 }
