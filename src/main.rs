@@ -12,6 +12,8 @@ mod config;
 mod configure;
 /// Implementation of a custom executor
 mod executor;
+/// Classification of failures into permanent and transient ones
+mod failure;
 /// All config structs that will be used to write gitlab-runner config files
 mod gitlab_config;
 /// All functions related to the GitLab API
